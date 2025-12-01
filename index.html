@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P Slider Sync</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f0f2f5; margin: 0; color: #333; }
+        .card { background: white; padding: 2rem; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center; max-width: 400px; width: 90%; }
+        
+        h1 { font-size: 1.5rem; margin: 0 0 0.5rem 0; }
+        p { margin: 0 0 1rem 0; color: #666; }
+        
+        /* Slider Styles */
+        input[type=range] { width: 100%; margin: 1.5rem 0; cursor: pointer; accent-color: #007bff; }
+        #sliderValue { font-size: 2rem; font-weight: bold; color: #007bff; margin: 0; }
+        
+        #status { margin-bottom: 1rem; padding: 0.5rem; border-radius: 8px; font-size: 0.9rem; background: #eee;}
+        
+        /* Host Area Styles */
+        .hidden { display: none !important; }
+        #hostArea { margin-top: 1.5rem; border-top: 1px solid #eee; padding-top: 1.5rem; }
+        #qrcode { display: flex; justify-content: center; margin-bottom: 1rem; }
+        
+        /* Copy Link Styles */
+        .link-box { display: flex; gap: 5px; margin-top: 10px; }
+        input[type="text"] { flex-grow: 1; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9rem; background: #f9f9f9; }
+        button { padding: 8px 12px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #0056b3; }
+        button:active { transform: scale(0.98); }
+
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h1>Sync Slider</h1>
+        <div id="status">Initializing Network...</div>
+        
+        <!-- The Slider -->
+        <h2 id="sliderValue">50</h2>
+        <input type="range" id="syncSlider" min="0" max="100" value="50">
+
+        <!-- Area for the Host -->
+        <div id="hostArea" class="hidden">
+            <p>Scan QR <strong>OR</strong> Copy Link to 2nd Device</p>
+            
+            <!-- QR Code -->
+            <div id="qrcode"></div>
+            
+            <!-- Copy Link Input -->
+            <div class="link-box">
+                <input type="text" id="joinLink" readonly placeholder="Generating link...">
+                <button onclick="copyLink()">Copy</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 1. Setup Variables
+        const slider = document.getElementById('syncSlider');
+        const display = document.getElementById('sliderValue');
+        const statusDiv = document.getElementById('status');
+        const hostArea = document.getElementById('hostArea');
+        const linkInput = document.getElementById('joinLink');
+        
+        let conn = null;
+        let myPeer = null;
+
+        // Check URL for "remote" param
+        const urlParams = new URLSearchParams(window.location.search);
+        const remotePeerId = urlParams.get('remote');
+
+        // 2. Initialize PeerJS
+        myPeer = new Peer();
+
+        myPeer.on('open', (id) => {
+            if (!remotePeerId) {
+                // === HOST MODE ===
+                statusDiv.innerText = "Waiting for connection...";
+                hostArea.classList.remove('hidden');
+
+                // Generate the Join URL
+                const currentUrl = window.location.href.split('?')[0];
+                const joinUrl = `${currentUrl}?remote=${id}`;
+
+                // Fill the Input Field
+                linkInput.value = joinUrl;
+
+                // Generate QR Code
+                new QRCode(document.getElementById("qrcode"), {
+                    text: joinUrl,
+                    width: 128,
+                    height: 128,
+                    colorDark : "#333333",
+                    colorLight : "#ffffff",
+                    correctLevel : QRCode.CorrectLevel.H
+                });
+            } else {
+                // === GUEST MODE ===
+                statusDiv.innerText = "Connecting to Host...";
+                connectToHost(remotePeerId);
+            }
+        });
+
+        // 3. Handle Incoming Connections (Host)
+        myPeer.on('connection', (connection) => {
+            setupConnection(connection);
+        });
+
+        // 4. Connect to Host (Guest)
+        function connectToHost(remoteId) {
+            const connection = myPeer.connect(remoteId);
+            setupConnection(connection);
+        }
+
+        // 5. Shared Logic
+        function setupConnection(connection) {
+            conn = connection;
+
+            conn.on('open', () => {
+                statusDiv.innerText = "✅ Connected! Devices Synced.";
+                statusDiv.style.background = "#d4edda";
+                statusDiv.style.color = "#155724";
+                hostArea.classList.add('hidden'); // Hide join info
+            });
+
+            conn.on('data', (data) => {
+                // Update UI without sending data back
+                updateSliderUI(data.value);
+            });
+        }
+
+        // 6. UI Helpers
+        function updateSliderUI(val) {
+            slider.value = val;
+            display.innerText = val;
+        }
+
+        function copyLink() {
+            const copyText = document.getElementById("joinLink");
+            copyText.select();
+            copyText.setSelectionRange(0, 99999); // Mobile compatibility
+            navigator.clipboard.writeText(copyText.value).then(() => {
+                const btn = document.querySelector('button');
+                const originalText = btn.innerText;
+                btn.innerText = "Copied!";
+                setTimeout(() => btn.innerText = originalText, 2000);
+            });
+        }
+
+        // 7. Event Listener
+        slider.addEventListener('input', (e) => {
+            const val = e.target.value;
+            display.innerText = val;
+            
+            // Send to peer
+            if (conn && conn.open) {
+                conn.send({ value: val });
+            }
+        });
+    </script>
+</body>
+</html>
