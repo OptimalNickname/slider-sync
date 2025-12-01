@@ -74,8 +74,19 @@
         const urlParams = new URLSearchParams(window.location.search);
         const remotePeerId = urlParams.get('remote');
 
-        // 2. Initialize PeerJS
-        myPeer = new Peer();
+// 2. Initialize PeerJS with Explicit STUN Servers
+        myPeer = new Peer(null, {
+            debug: 2, // Print errors to console
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' },
+                    { urls: 'stun:stun4.l.google.com:19302' }
+                ]
+            }
+        });
 
         myPeer.on('open', (id) => {
             if (!remotePeerId) {
