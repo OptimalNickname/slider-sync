@@ -3,46 +3,49 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MQTT Slider Sync</title>
-    <!-- Load MQTT.js for reliable messaging -->
+    <title>Robust Slider Sync</title>
+    <!-- Load MQTT.js -->
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #eef2f5; margin: 0; color: #333; }
-        .card { background: white; padding: 2rem; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center; max-width: 400px; width: 90%; }
-        h1 { font-size: 1.5rem; margin: 0 0 0.5rem 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f4f6f8; margin: 0; color: #333; }
+        .card { background: white; padding: 2rem; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 90%; border: 1px solid #e1e4e8; }
+        
+        h1 { font-size: 1.5rem; margin: 0 0 0.5rem 0; color: #2c3e50; }
         p { margin: 0 0 1rem 0; color: #666; font-size: 0.9rem; }
         
         /* Slider */
-        input[type=range] { width: 100%; margin: 1.5rem 0; cursor: pointer; }
-        #sliderValue { font-size: 2.5rem; font-weight: 800; color: #6f42c1; margin: 0; }
+        input[type=range] { width: 100%; margin: 2rem 0; cursor: pointer; accent-color: #28a745; }
+        #sliderValue { font-size: 3rem; font-weight: 800; color: #28a745; margin: 0; line-height: 1; }
         
-        #status { margin-bottom: 1rem; padding: 0.5rem; border-radius: 6px; font-size: 0.85rem; background: #eee; color: #555; }
+        /* Log Box */
+        #log { margin-bottom: 1rem; padding: 0.75rem; border-radius: 8px; font-size: 0.8rem; background: #2d3436; color: #dfe6e9; font-family: monospace; text-align: left; height: 60px; overflow-y: auto; display: flex; flex-direction: column-reverse; }
         
         /* Host Area */
         .hidden { display: none !important; }
         #hostArea { margin-top: 1.5rem; border-top: 1px solid #eee; padding-top: 1.5rem; }
         #qrcode { display: flex; justify-content: center; margin-bottom: 1rem; }
         
-        /* Copy Link */
-        .link-box { display: flex; gap: 5px; margin-top: 10px; }
-        input[type="text"] { flex-grow: 1; padding: 8px; border: 1px solid #ddd; border-radius: 6px; background: #f9f9f9; color: #666; font-size: 0.8rem; }
-        button { padding: 8px 15px; background: #6f42c1; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #5a32a3; }
+        .link-box { display: flex; gap: 8px; margin-top: 10px; }
+        input[type="text"] { flex-grow: 1; padding: 10px; border: 1px solid #ddd; border-radius: 6px; background: #f9f9f9; font-size: 0.8rem; color: #555; }
+        button { padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #218838; }
     </style>
 </head>
 <body>
 
     <div class="card">
-        <h1>Cloud Sync</h1>
-        <div id="status">Connecting to Cloud Broker...</div>
+        <h1>Sync Slider v4</h1>
+        
+        <!-- Debug Log -->
+        <div id="log">Initializing...</div>
         
         <h2 id="sliderValue">50</h2>
         <input type="range" id="syncSlider" min="0" max="100" value="50">
 
         <div id="hostArea" class="hidden">
-            <p>Scan or Copy Link to Sync</p>
+            <p>Scan to Join Session</p>
             <div id="qrcode"></div>
             <div class="link-box">
                 <input type="text" id="joinLink" readonly>
@@ -53,14 +56,18 @@
 
     <script>
         // --- CONFIGURATION ---
-        // We use the HiveMQ public websocket broker. 
-        // It's free and works through firewalls.
-        const BROKER_URL = 'wss://broker.hivemq.com:8000/mqtt';
-        
-        // --- VARIABLES ---
+        // Using EMQX Public Broker (Industry Standard)
+        // Port 8084 is WSS (Secure WebSocket)
+        const BROKER_CONFIG = {
+            hostname: 'broker.emqx.io',
+            port: 8084,
+            path: '/mqtt',
+            protocol: 'wss'
+        };
+
         const slider = document.getElementById('syncSlider');
         const display = document.getElementById('sliderValue');
-        const statusDiv = document.getElementById('status');
+        const logDiv = document.getElementById('log');
         const hostArea = document.getElementById('hostArea');
         const linkInput = document.getElementById('joinLink');
         
@@ -68,95 +75,98 @@
         let myTopic = null;
         let isHost = false;
 
-        // 1. Determine Topic (Room ID)
+        function log(msg) {
+            const time = new Date().toLocaleTimeString().split(' ')[0];
+            logDiv.innerHTML = `<div>[${time}] ${msg}</div>` + logDiv.innerHTML;
+        }
+
+        // 1. Setup Topic
         const urlParams = new URLSearchParams(window.location.search);
         const remoteTopic = urlParams.get('topic');
 
         if (remoteTopic) {
-            // Guest Mode
             myTopic = remoteTopic;
-            statusDiv.innerText = "Joining session...";
+            log("Mode: GUEST. Joining...");
         } else {
-            // Host Mode
             isHost = true;
-            // Generate a random unique topic ID
-            const randomId = Math.random().toString(36).substring(2, 10);
-            myTopic = `slider-sync-demo/${randomId}`;
+            // Shorter, cleaner ID
+            const randomId = Math.random().toString(36).substring(2, 8);
+            myTopic = `sync/${randomId}`;
+            log("Mode: HOST. Creating room...");
             
-            // Show Invite UI
+            // Show Invite
             hostArea.classList.remove('hidden');
             const joinUrl = `${window.location.href.split('?')[0]}?topic=${myTopic}`;
             linkInput.value = joinUrl;
-            new QRCode(document.getElementById("qrcode"), { text: joinUrl, width: 128, height: 128 });
+            new QRCode(document.getElementById("qrcode"), { text: joinUrl, width: 120, height: 120 });
         }
 
-        // 2. Connect to Public MQTT Broker
-        // We use a unique client ID so the broker knows who we are
-        const clientId = 'client-' + Math.random().toString(16).substr(2, 8);
+        // 2. Connect
+        log(`Connecting to ${BROKER_CONFIG.hostname}:${BROKER_CONFIG.port}...`);
         
-        client = mqtt.connect(BROKER_URL, {
+        const clientId = 'user-' + Math.random().toString(16).substr(2, 8);
+        const connectUrl = `${BROKER_CONFIG.protocol}://${BROKER_CONFIG.hostname}:${BROKER_CONFIG.port}${BROKER_CONFIG.path}`;
+
+        client = mqtt.connect(connectUrl, {
             clientId: clientId,
             clean: true,
-            connectTimeout: 4000,
+            connectTimeout: 5000,
+            reconnectPeriod: 1000,
         });
 
-        // 3. Connection Event Handlers
+        // 3. Handlers
         client.on('connect', () => {
-            console.log("Connected to Broker");
-            statusDiv.innerText = "🟢 Online & Synced via Cloud";
-            statusDiv.style.background = "#d1e7dd";
-            statusDiv.style.color = "#0f5132";
+            log("✅ CONNECTED to Cloud!");
+            logDiv.style.background = "#28a745"; // Green
             
-            // Subscribe to the specific topic for this session
+            // Subscribe
             client.subscribe(myTopic, (err) => {
-                if (err) statusDiv.innerText = "Error subscribing";
+                if (!err) {
+                    log(`Subscribed: ${myTopic}`);
+                    if (!isHost) hostArea.classList.add('hidden');
+                } else {
+                    log("❌ Sub Error");
+                }
             });
-            
-            // If Guest, hide the invite UI immediately
-            if (!isHost) {
-                hostArea.classList.add('hidden');
-            }
         });
 
         client.on('error', (err) => {
             console.error(err);
-            statusDiv.innerText = "🔴 Connection Error (Firewall?)";
+            log("❌ Error: " + err.message);
+            logDiv.style.background = "#c0392b"; // Red
         });
 
-        // 4. Listen for Messages (Receive Data)
+        client.on('offline', () => {
+            log("⚠️ Network Offline / Blocking");
+        });
+
         client.on('message', (topic, message) => {
-            if (topic === myTopic) {
-                const data = JSON.parse(message.toString());
-                
-                // Only update if the value is different (prevent loops)
-                if (slider.value != data.val) {
-                    slider.value = data.val;
-                    display.innerText = data.val;
-                }
+            // Received data
+            const data = JSON.parse(message.toString());
+            log(`RX: ${data.val}`);
+            if (slider.value != data.val) {
+                slider.value = data.val;
+                display.innerText = data.val;
             }
         });
 
-        // 5. Send Data (Publish)
+        // 4. Send Data
         slider.addEventListener('input', (e) => {
             const val = e.target.value;
             display.innerText = val;
             
-            if (client.connected) {
-                // Publish the new value to the topic
-                const payload = JSON.stringify({ val: val });
-                client.publish(myTopic, payload, { qos: 0, retain: false });
+            if (client && client.connected) {
+                // 'retain: true' means new people get the last value immediately
+                client.publish(myTopic, JSON.stringify({ val: val }), { qos: 0, retain: true });
             }
         });
 
-        // Utility: Copy Link
         function copyLink() {
             const copyText = document.getElementById("joinLink");
             copyText.select();
             copyText.setSelectionRange(0, 99999);
             navigator.clipboard.writeText(copyText.value);
-            const btn = document.querySelector('button');
-            btn.innerText = "Copied!";
-            setTimeout(() => btn.innerText = "Copy", 2000);
+            log("Link copied to clipboard");
         }
     </script>
 </body>
