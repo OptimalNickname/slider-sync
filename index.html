@@ -3,176 +3,161 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>P2P Slider Sync</title>
-    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <title>MQTT Slider Sync</title>
+    <!-- Load MQTT.js for reliable messaging -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f0f2f5; margin: 0; color: #333; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #eef2f5; margin: 0; color: #333; }
         .card { background: white; padding: 2rem; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center; max-width: 400px; width: 90%; }
-        
         h1 { font-size: 1.5rem; margin: 0 0 0.5rem 0; }
-        p { margin: 0 0 1rem 0; color: #666; }
+        p { margin: 0 0 1rem 0; color: #666; font-size: 0.9rem; }
         
-        /* Slider Styles */
-        input[type=range] { width: 100%; margin: 1.5rem 0; cursor: pointer; accent-color: #007bff; }
-        #sliderValue { font-size: 2rem; font-weight: bold; color: #007bff; margin: 0; }
+        /* Slider */
+        input[type=range] { width: 100%; margin: 1.5rem 0; cursor: pointer; }
+        #sliderValue { font-size: 2.5rem; font-weight: 800; color: #6f42c1; margin: 0; }
         
-        #status { margin-bottom: 1rem; padding: 0.5rem; border-radius: 8px; font-size: 0.9rem; background: #eee;}
+        #status { margin-bottom: 1rem; padding: 0.5rem; border-radius: 6px; font-size: 0.85rem; background: #eee; color: #555; }
         
-        /* Host Area Styles */
+        /* Host Area */
         .hidden { display: none !important; }
         #hostArea { margin-top: 1.5rem; border-top: 1px solid #eee; padding-top: 1.5rem; }
         #qrcode { display: flex; justify-content: center; margin-bottom: 1rem; }
         
-        /* Copy Link Styles */
+        /* Copy Link */
         .link-box { display: flex; gap: 5px; margin-top: 10px; }
-        input[type="text"] { flex-grow: 1; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9rem; background: #f9f9f9; }
-        button { padding: 8px 12px; background: #007bff; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-        button:hover { background: #0056b3; }
-        button:active { transform: scale(0.98); }
-
+        input[type="text"] { flex-grow: 1; padding: 8px; border: 1px solid #ddd; border-radius: 6px; background: #f9f9f9; color: #666; font-size: 0.8rem; }
+        button { padding: 8px 15px; background: #6f42c1; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #5a32a3; }
     </style>
 </head>
 <body>
 
     <div class="card">
-        <h1>Sync Slider</h1>
-        <div id="status">Initializing Network...</div>
+        <h1>Cloud Sync</h1>
+        <div id="status">Connecting to Cloud Broker...</div>
         
-        <!-- The Slider -->
         <h2 id="sliderValue">50</h2>
         <input type="range" id="syncSlider" min="0" max="100" value="50">
 
-        <!-- Area for the Host -->
         <div id="hostArea" class="hidden">
-            <p>Scan QR <strong>OR</strong> Copy Link to 2nd Device</p>
-            
-            <!-- QR Code -->
+            <p>Scan or Copy Link to Sync</p>
             <div id="qrcode"></div>
-            
-            <!-- Copy Link Input -->
             <div class="link-box">
-                <input type="text" id="joinLink" readonly placeholder="Generating link...">
+                <input type="text" id="joinLink" readonly>
                 <button onclick="copyLink()">Copy</button>
             </div>
         </div>
     </div>
 
     <script>
-        // 1. Setup Variables
+        // --- CONFIGURATION ---
+        // We use the HiveMQ public websocket broker. 
+        // It's free and works through firewalls.
+        const BROKER_URL = 'wss://broker.hivemq.com:8000/mqtt';
+        
+        // --- VARIABLES ---
         const slider = document.getElementById('syncSlider');
         const display = document.getElementById('sliderValue');
         const statusDiv = document.getElementById('status');
         const hostArea = document.getElementById('hostArea');
         const linkInput = document.getElementById('joinLink');
         
-        let conn = null;
-        let myPeer = null;
+        let client = null;
+        let myTopic = null;
+        let isHost = false;
 
-        // Check URL for "remote" param
+        // 1. Determine Topic (Room ID)
         const urlParams = new URLSearchParams(window.location.search);
-        const remotePeerId = urlParams.get('remote');
+        const remoteTopic = urlParams.get('topic');
 
-// 2. Initialize PeerJS with Explicit STUN Servers
-        myPeer = new Peer(null, {
-            debug: 2, // Print errors to console
-            config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' },
-                    { urls: 'stun:stun3.l.google.com:19302' },
-                    { urls: 'stun:stun4.l.google.com:19302' }
-                ]
+        if (remoteTopic) {
+            // Guest Mode
+            myTopic = remoteTopic;
+            statusDiv.innerText = "Joining session...";
+        } else {
+            // Host Mode
+            isHost = true;
+            // Generate a random unique topic ID
+            const randomId = Math.random().toString(36).substring(2, 10);
+            myTopic = `slider-sync-demo/${randomId}`;
+            
+            // Show Invite UI
+            hostArea.classList.remove('hidden');
+            const joinUrl = `${window.location.href.split('?')[0]}?topic=${myTopic}`;
+            linkInput.value = joinUrl;
+            new QRCode(document.getElementById("qrcode"), { text: joinUrl, width: 128, height: 128 });
+        }
+
+        // 2. Connect to Public MQTT Broker
+        // We use a unique client ID so the broker knows who we are
+        const clientId = 'client-' + Math.random().toString(16).substr(2, 8);
+        
+        client = mqtt.connect(BROKER_URL, {
+            clientId: clientId,
+            clean: true,
+            connectTimeout: 4000,
+        });
+
+        // 3. Connection Event Handlers
+        client.on('connect', () => {
+            console.log("Connected to Broker");
+            statusDiv.innerText = "🟢 Online & Synced via Cloud";
+            statusDiv.style.background = "#d1e7dd";
+            statusDiv.style.color = "#0f5132";
+            
+            // Subscribe to the specific topic for this session
+            client.subscribe(myTopic, (err) => {
+                if (err) statusDiv.innerText = "Error subscribing";
+            });
+            
+            // If Guest, hide the invite UI immediately
+            if (!isHost) {
+                hostArea.classList.add('hidden');
             }
         });
 
-        myPeer.on('open', (id) => {
-            if (!remotePeerId) {
-                // === HOST MODE ===
-                statusDiv.innerText = "Waiting for connection...";
-                hostArea.classList.remove('hidden');
+        client.on('error', (err) => {
+            console.error(err);
+            statusDiv.innerText = "🔴 Connection Error (Firewall?)";
+        });
 
-                // Generate the Join URL
-                const currentUrl = window.location.href.split('?')[0];
-                const joinUrl = `${currentUrl}?remote=${id}`;
-
-                // Fill the Input Field
-                linkInput.value = joinUrl;
-
-                // Generate QR Code
-                new QRCode(document.getElementById("qrcode"), {
-                    text: joinUrl,
-                    width: 128,
-                    height: 128,
-                    colorDark : "#333333",
-                    colorLight : "#ffffff",
-                    correctLevel : QRCode.CorrectLevel.H
-                });
-            } else {
-                // === GUEST MODE ===
-                statusDiv.innerText = "Connecting to Host...";
-                connectToHost(remotePeerId);
+        // 4. Listen for Messages (Receive Data)
+        client.on('message', (topic, message) => {
+            if (topic === myTopic) {
+                const data = JSON.parse(message.toString());
+                
+                // Only update if the value is different (prevent loops)
+                if (slider.value != data.val) {
+                    slider.value = data.val;
+                    display.innerText = data.val;
+                }
             }
         });
 
-        // 3. Handle Incoming Connections (Host)
-        myPeer.on('connection', (connection) => {
-            setupConnection(connection);
-        });
-
-        // 4. Connect to Host (Guest)
-        function connectToHost(remoteId) {
-            const connection = myPeer.connect(remoteId);
-            setupConnection(connection);
-        }
-
-        // 5. Shared Logic
-        function setupConnection(connection) {
-            conn = connection;
-
-            conn.on('open', () => {
-                statusDiv.innerText = "✅ Connected! Devices Synced.";
-                statusDiv.style.background = "#d4edda";
-                statusDiv.style.color = "#155724";
-                hostArea.classList.add('hidden'); // Hide join info
-            });
-
-            conn.on('data', (data) => {
-                // Update UI without sending data back
-                updateSliderUI(data.value);
-            });
-        }
-
-        // 6. UI Helpers
-        function updateSliderUI(val) {
-            slider.value = val;
-            display.innerText = val;
-        }
-
-        function copyLink() {
-            const copyText = document.getElementById("joinLink");
-            copyText.select();
-            copyText.setSelectionRange(0, 99999); // Mobile compatibility
-            navigator.clipboard.writeText(copyText.value).then(() => {
-                const btn = document.querySelector('button');
-                const originalText = btn.innerText;
-                btn.innerText = "Copied!";
-                setTimeout(() => btn.innerText = originalText, 2000);
-            });
-        }
-
-        // 7. Event Listener
+        // 5. Send Data (Publish)
         slider.addEventListener('input', (e) => {
             const val = e.target.value;
             display.innerText = val;
             
-            // Send to peer
-            if (conn && conn.open) {
-                conn.send({ value: val });
+            if (client.connected) {
+                // Publish the new value to the topic
+                const payload = JSON.stringify({ val: val });
+                client.publish(myTopic, payload, { qos: 0, retain: false });
             }
         });
+
+        // Utility: Copy Link
+        function copyLink() {
+            const copyText = document.getElementById("joinLink");
+            copyText.select();
+            copyText.setSelectionRange(0, 99999);
+            navigator.clipboard.writeText(copyText.value);
+            const btn = document.querySelector('button');
+            btn.innerText = "Copied!";
+            setTimeout(() => btn.innerText = "Copy", 2000);
+        }
     </script>
 </body>
 </html>
